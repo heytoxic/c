@@ -33,7 +33,7 @@ TWILIO_NUMBER = os.getenv("TWILIO_NUMBER")
 VPS_PUBLIC_IP = os.getenv("VPS_IP")
 WEB_PORT = 5000
 
-# Safety Check
+# Safety check to ensure variables are loaded
 if not all([TWILIO_SID, TWILIO_TOKEN, BOT_TOKEN]):
     print("CRITICAL ERROR: Credentials not found in .env file!")
     exit(1)
@@ -45,7 +45,7 @@ call_app = PyTgCalls(user)
 twilio_api = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 active_sessions = {}
 
-# --- WEB SERVER & HANDLERS ---
+# --- WEB SERVER LOGIC ---
 async def voice_webhook(request):
     cid = request.query.get('cid', '0')
     response = VoiceResponse()
@@ -75,16 +75,25 @@ async def websocket_handler(request):
     except: pass
     return ws
 
+# --- BOT COMMANDS ---
+@bot.on_message(filters.command("start"))
+async def start_handler(client, message):
+    await message.reply("Professional Telephony System Active.\nUse /call +number in groups.")
+
 @bot.on_message(filters.command("call") & filters.group)
 async def call_handler(client, message):
     if len(message.command) < 2:
-        return await message.reply("Invalid syntax. Use: /call +91...")
+        return await message.reply("Format: /call +91...")
     
     target = message.command[1]
     chat_id = message.chat.id
-    status_msg = await message.reply("Initiating encrypted call...")
+    fifo_path = f"/tmp/twilio_{chat_id}.fifo"
+    if not os.path.exists(fifo_path): os.mkfifo(fifo_path)
+    
+    status_msg = await message.reply("Establishing secure bridge...")
 
     try:
+        await user.get_chat(chat_id)
         outbound = twilio_api.calls.create(
             url=f"http://{VPS_PUBLIC_IP}:{WEB_PORT}/voice?cid={chat_id}",
             to=target, from_=TWILIO_NUMBER
@@ -93,9 +102,6 @@ async def call_handler(client, message):
             "sid": outbound.sid, "is_recording": False, "record_handle": None,
             "raw_path": f"/tmp/rec_{chat_id}.raw", "final_path": f"/tmp/final_{chat_id}.ogg"
         }
-        
-        fifo_path = f"/tmp/twilio_{chat_id}.fifo"
-        if not os.path.exists(fifo_path): os.mkfifo(fifo_path)
         await call_app.play(chat_id, MediaStream(fifo_path))
         
         kb = InlineKeyboardMarkup([
@@ -105,7 +111,7 @@ async def call_handler(client, message):
         ])
         await status_msg.edit(f"Call active to {target}\nAudio bridged to Voice Chat.", reply_markup=kb)
     except Exception as e:
-        await status_msg.edit(f"Twilio Error: {e}")
+        await status_msg.edit(f"Telephony Error: {e}")
 
 @bot.on_callback_query()
 async def actions(client, query: CallbackQuery):
@@ -118,7 +124,7 @@ async def actions(client, query: CallbackQuery):
             if session["record_handle"]: session["record_handle"].close()
             del active_sessions[cid]
         await call_app.leave_call(cid)
-        await query.message.edit_text("Call Connection Closed.")
+        await query.message.edit_text("Call terminated.")
     elif query.data == "rec" and session:
         session["is_recording"] = True
         session["record_handle"] = open(session["raw_path"], "wb")
@@ -134,19 +140,21 @@ async def actions(client, query: CallbackQuery):
         session["record_handle"].close()
         session["record_handle"] = None
         subprocess.run(["ffmpeg", "-y", "-f", "mulaw", "-ar", "8000", "-i", session['raw_path'], "-c:a", "libopus", session['final_path']])
-        await client.send_voice(cid, session["final_path"], caption="Call Log Transmission")
+        await client.send_voice(cid, session["final_path"], caption="Call Recording File")
 
+# --- MAIN ---
 async def main():
     app = web.Application()
     app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', WEB_PORT).start()
+    
     await bot.start()
     await user.start()
     async for d in user.get_dialogs(): pass
     await call_app.start()
-    print("--- SYSTEM ONLINE ---")
+    print("--- SYSTEM FULLY ONLINE ---")
     await idle()
 
 if __name__ == "__main__":
