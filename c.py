@@ -23,14 +23,15 @@ from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Connect
 
 # --- CONFIGURATION (via getenv) ---
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SESSION_STRING = os.getenv("SESSION_STRING")
-TWILIO_SID = os.getenv("TWILIO_SID")
-TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-TWILIO_NUMBER = os.getenv("TWILIO_NUMBER")
-VPS_PUBLIC_IP = os.getenv("VPS_IP")
+API_IDAPI_ID = 21705136
+API_HASH = "78730e89d196e160b0f1992018c6cb19"
+BOT_TOKEN = "8750484092:AAGWLBGJgFXYG65iJf4Mm_nh0tQ4C8q1IEc"
+SESSION_STRING = "BQFLMbAANQBC6oPztCBRPNiCK1HU-eNwJj4rBtJf5gTWezHVVmATq8DeaGvhvT4v4bVyezTHryiiFy7gJHum2SJH9N181w7WZJyhuXEunRTpHPf4kdJinTxl02XAV43hpYTowjAArdyJYrwXRrakYU-ouC4KvEX5nt0VI9pbTZAWlClv-6hj0Cx2JPrvy63sQ-OCTrAVFCWVjfjkLXvhk433oxGJpXxY-a8F0wB0TUSI29SfpA3ShIdvZCJ4KHTsAjLnMzsEHJhX8GphD-H_s5QW4z_JjgvY8eOkwAYk7ZB_AkSbTTqf7pfrl8_FXXKzIfxpsVvLbS8d8t62uZ9pcJCIODnskgAAAAGd7PcCAA"
+
+TWILIO_SID = "AC6134464586bae7fa19b92a350c6708a9"
+TWILIO_TOKEN = ""
+TWILIO_NUMBER = "+14482173794"
+VPS_PUBLIC_IP = "16.171.30.40" 
 WEB_PORT = 5000
 
 # Safety check to ensure variables are loaded
