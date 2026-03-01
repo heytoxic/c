@@ -4,6 +4,8 @@ import json
 import base64
 import subprocess
 from aiohttp import web
+from pyrogram import Client, filters, idle
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 # --- CRITICAL FIX: PYROGRAM/PYTGCALLS MONKEY PATCH ---
 import pyrogram.errors
@@ -12,8 +14,6 @@ if not hasattr(pyrogram.errors, 'GroupcallForbidden'):
     pyrogram.errors.GroupcallForbidden = GroupcallForbidden
 # ----------------------------------------------------
 
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 from twilio.rest import Client as TwilioClient
@@ -38,7 +38,7 @@ call_app = PyTgCalls(user)
 twilio_api = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 active_sessions = {}
 
-# --- WEB SERVER (TWILIO AUDIO BRIDGE) ---
+# --- WEB SERVER ---
 async def voice_webhook(request):
     cid = request.query.get('cid', '0')
     response = VoiceResponse()
@@ -68,21 +68,15 @@ async def websocket_handler(request):
     except: pass
     return ws
 
-# --- BOT INTERFACE ---
-@bot.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
-    text = (
-        "Telephony Voice System Active\n\n"
-        "How to use:\n"
-        "1. Add me and my User Assistant to your group.\n"
-        "2. Ensure User Assistant is an admin with VC permissions.\n"
-        "3. Manually start a Video Chat in the group.\n"
-        "4. Use /call [number] to initiate a bridge."
-    )
-    await message.reply(text)
+# --- HANDLERS ---
+@bot.on_message(filters.command("start"))
+async def start_handler(client, message):
+    print(f"DEBUG: Start command received in {message.chat.id}") # Terminal logging
+    await message.reply("Telephony System is Online. Use /call [number] in group.")
 
 @bot.on_message(filters.command("call") & filters.group)
-async def call_cmd(client, message):
+async def call_handler(client, message):
+    print(f"DEBUG: Call command received for {message.command}") # Terminal logging
     if len(message.command) < 2:
         return await message.reply("Usage: /call +919509203839")
     
@@ -94,24 +88,14 @@ async def call_cmd(client, message):
     status_msg = await message.reply("Establishing connection...")
 
     try:
-        # Resolving Peer
-        try:
-            await user.get_chat(chat_id)
-        except:
-            return await status_msg.edit("Assistant not found in this group. Please add it first.")
-
-        # Trigger Twilio
         outbound = twilio_api.calls.create(
             url=f"http://{VPS_PUBLIC_IP}:{WEB_PORT}/voice?cid={chat_id}",
             to=target, from_=TWILIO_NUMBER
         )
-        
         active_sessions[chat_id] = {
             "sid": outbound.sid, "is_recording": False, "record_handle": None,
             "raw_path": f"/tmp/rec_{chat_id}.raw", "final_path": f"/tmp/final_{chat_id}.ogg"
         }
-        
-        # Join VC
         await call_app.play(chat_id, MediaStream(fifo_path))
         
         kb = InlineKeyboardMarkup([
@@ -152,28 +136,35 @@ async def actions(client, query: CallbackQuery):
         session["is_recording"] = False
         session["record_handle"].close()
         session["record_handle"] = None
-        # Convert and Send
         subprocess.run(["ffmpeg", "-y", "-f", "mulaw", "-ar", "8000", "-i", session['raw_path'], "-c:a", "libopus", session['final_path']])
         await client.send_voice(cid, session["final_path"], caption="Call Recording File")
 
-# --- SERVER STARTUP ---
+# --- MAIN ---
 async def main():
+    # Start Server
     app = web.Application()
     app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', WEB_PORT).start()
     
+    # Start Clients
     await bot.start()
     await user.start()
-    # Resolve all peers to avoid PeerIdInvalid
+    
+    # Fix Peer ID
     async for dialog in user.get_dialogs():
         pass
         
     await call_app.start()
-    print("--- TELEPHONY SYSTEM ONLINE ---")
-    await asyncio.Event().wait()
+    print("--- SYSTEM ONLINE ---")
+    await idle() # Correct way to keep bot running
+    
+    # Cleanup on exit
+    await bot.stop()
+    await user.stop()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
     
