@@ -1,36 +1,42 @@
 import asyncio
-from dotenv import load_dotenv
 import os
 import json
 import base64
 import subprocess
 from aiohttp import web
-from pyrogram import Client, filters, idle
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from dotenv import load_dotenv
 
-# --- CRITICAL FIX: PYROGRAM/PYTGCALLS MONKEY PATCH ---
+# Load environment variables from .env file
+load_dotenv()
+
+# --- MONKEY PATCH FOR PYROGRAM/PYTGCALLS ---
 import pyrogram.errors
 if not hasattr(pyrogram.errors, 'GroupcallForbidden'):
     class GroupcallForbidden(Exception): pass
     pyrogram.errors.GroupcallForbidden = GroupcallForbidden
-# ----------------------------------------------------
 
+from pyrogram import Client, filters, idle
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Connect
 
-# --- CONFIGURATION ---
-API_ID = 21705136
-API_HASH = "78730e89d196e160b0f1992018c6cb19"
-BOT_TOKEN = "8750484092:AAGWLBGJgFXYG65iJf4Mm_nh0tQ4C8q1IEc"
-SESSION_STRING = "BQFLMbAANQBC6oPztCBRPNiCK1HU-eNwJj4rBtJf5gTWezHVVmATq8DeaGvhvT4v4bVyezTHryiiFy7gJHum2SJH9N181w7WZJyhuXEunRTpHPf4kdJinTxl02XAV43hpYTowjAArdyJYrwXRrakYU-ouC4KvEX5nt0VI9pbTZAWlClv-6hj0Cx2JPrvy63sQ-OCTrAVFCWVjfjkLXvhk433oxGJpXxY-a8F0wB0TUSI29SfpA3ShIdvZCJ4KHTsAjLnMzsEHJhX8GphD-H_s5QW4z_JjgvY8eOkwAYk7ZB_AkSbTTqf7pfrl8_FXXKzIfxpsVvLbS8d8t62uZ9pcJCIODnskgAAAAGd7PcCAA"
-
-TWILIO_SID = os.getenv("SID")
-TWILIO_TOKEN = os.getenv("AUTH")
-TWILIO_NUMBER = "+14482173794"
-VPS_PUBLIC_IP = "16.171.30.40" 
+# --- CONFIGURATION (via getenv) ---
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+SESSION_STRING = os.getenv("SESSION_STRING")
+TWILIO_SID = os.getenv("TWILIO_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
+TWILIO_NUMBER = os.getenv("TWILIO_NUMBER")
+VPS_PUBLIC_IP = os.getenv("VPS_IP")
 WEB_PORT = 5000
+
+# Safety Check
+if not all([TWILIO_SID, TWILIO_TOKEN, BOT_TOKEN]):
+    print("CRITICAL ERROR: Credentials not found in .env file!")
+    exit(1)
 
 # --- INITIALIZATION ---
 bot = Client("telephony_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -39,7 +45,7 @@ call_app = PyTgCalls(user)
 twilio_api = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 active_sessions = {}
 
-# --- WEB SERVER ---
+# --- WEB SERVER & HANDLERS ---
 async def voice_webhook(request):
     cid = request.query.get('cid', '0')
     response = VoiceResponse()
@@ -69,24 +75,14 @@ async def websocket_handler(request):
     except: pass
     return ws
 
-# --- HANDLERS ---
-@bot.on_message(filters.command("start"))
-async def start_handler(client, message):
-    print(f"DEBUG: Start command received in {message.chat.id}") # Terminal logging
-    await message.reply("Telephony System is Online. Use /call [number] in group.")
-
 @bot.on_message(filters.command("call") & filters.group)
 async def call_handler(client, message):
-    print(f"DEBUG: Call command received for {message.command}") # Terminal logging
     if len(message.command) < 2:
-        return await message.reply("Usage: /call +919509203839")
+        return await message.reply("Invalid syntax. Use: /call +91...")
     
     target = message.command[1]
     chat_id = message.chat.id
-    fifo_path = f"/tmp/twilio_{chat_id}.fifo"
-    
-    if not os.path.exists(fifo_path): os.mkfifo(fifo_path)
-    status_msg = await message.reply("Establishing connection...")
+    status_msg = await message.reply("Initiating encrypted call...")
 
     try:
         outbound = twilio_api.calls.create(
@@ -97,6 +93,9 @@ async def call_handler(client, message):
             "sid": outbound.sid, "is_recording": False, "record_handle": None,
             "raw_path": f"/tmp/rec_{chat_id}.raw", "final_path": f"/tmp/final_{chat_id}.ogg"
         }
+        
+        fifo_path = f"/tmp/twilio_{chat_id}.fifo"
+        if not os.path.exists(fifo_path): os.mkfifo(fifo_path)
         await call_app.play(chat_id, MediaStream(fifo_path))
         
         kb = InlineKeyboardMarkup([
@@ -104,15 +103,14 @@ async def call_handler(client, message):
              InlineKeyboardButton("Join VC", url=f"https://t.me/{message.chat.username}?videochat")],
             [InlineKeyboardButton("Start Recording", callback_data="rec")]
         ])
-        await status_msg.edit(f"Call active to {target}.\nAudio bridged to Voice Chat.", reply_markup=kb)
+        await status_msg.edit(f"Call active to {target}\nAudio bridged to Voice Chat.", reply_markup=kb)
     except Exception as e:
-        await status_msg.edit(f"Telephony Error: {e}")
+        await status_msg.edit(f"Twilio Error: {e}")
 
 @bot.on_callback_query()
 async def actions(client, query: CallbackQuery):
     cid = query.message.chat.id
     session = active_sessions.get(cid)
-    
     if query.data == "end":
         if session:
             try: twilio_api.calls(session["sid"]).update(status="completed")
@@ -120,8 +118,7 @@ async def actions(client, query: CallbackQuery):
             if session["record_handle"]: session["record_handle"].close()
             del active_sessions[cid]
         await call_app.leave_call(cid)
-        await query.message.edit_text("Call Disconnected.")
-    
+        await query.message.edit_text("Call Connection Closed.")
     elif query.data == "rec" and session:
         session["is_recording"] = True
         session["record_handle"] = open(session["raw_path"], "wb")
@@ -131,41 +128,27 @@ async def actions(client, query: CallbackQuery):
             [InlineKeyboardButton("Stop Recording", callback_data="stop_rec")]
         ])
         await query.message.edit_reply_markup(reply_markup=kb)
-        await query.answer("System Recording...")
-        
+        await query.answer("Recording started.")
     elif query.data == "stop_rec" and session:
         session["is_recording"] = False
         session["record_handle"].close()
         session["record_handle"] = None
         subprocess.run(["ffmpeg", "-y", "-f", "mulaw", "-ar", "8000", "-i", session['raw_path'], "-c:a", "libopus", session['final_path']])
-        await client.send_voice(cid, session["final_path"], caption="Call Recording File")
+        await client.send_voice(cid, session["final_path"], caption="Call Log Transmission")
 
-# --- MAIN ---
 async def main():
-    # Start Server
     app = web.Application()
     app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', WEB_PORT).start()
-    
-    # Start Clients
     await bot.start()
     await user.start()
-    
-    # Fix Peer ID
-    async for dialog in user.get_dialogs():
-        pass
-        
+    async for d in user.get_dialogs(): pass
     await call_app.start()
     print("--- SYSTEM ONLINE ---")
-    await idle() # Correct way to keep bot running
-    
-    # Cleanup on exit
-    await bot.stop()
-    await user.stop()
+    await idle()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
     
