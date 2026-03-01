@@ -84,7 +84,7 @@ async def websocket_handler(request):
 @bot.on_message(filters.command("call") & filters.group)
 async def initiate_call(client, message):
     if len(message.command) < 2:
-        await message.reply("Invalid syntax. Usage: /call +919509203839")
+        await message.reply("Invalid syntax. Usage: /call +91950*****9")
         return
 
     target = message.command[1]
