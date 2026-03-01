@@ -4,6 +4,16 @@ import json
 import base64
 import subprocess
 from aiohttp import web
+
+# --- THE MAGIC FIX (MONKEY PATCH) ---
+# Ye PyTgCalls aur Pyrogram ka import error bypass karne ke liye hai
+import pyrogram.errors
+if not hasattr(pyrogram.errors, 'GroupcallForbidden'):
+    class GroupcallForbidden(Exception):
+        pass
+    pyrogram.errors.GroupcallForbidden = GroupcallForbidden
+# ------------------------------------
+
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pytgcalls import PyTgCalls
@@ -28,7 +38,7 @@ WEB_PORT = 5000
 bot = Client("telephony_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user = Client("user_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
 
-# We initialize PyTgCalls after both clients are defined
+# We initialize PyTgCalls after the patch and clients are defined
 call_app = PyTgCalls(user)
 twilio_api = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 active_sessions = {}
@@ -146,4 +156,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
