@@ -5,14 +5,12 @@ import base64
 import subprocess
 from aiohttp import web
 
-# --- THE MAGIC FIX (MONKEY PATCH) ---
-# Ye PyTgCalls aur Pyrogram ka import error bypass karne ke liye hai
+# --- MONKEY PATCH FOR PYROGRAM/PYTGCALLS CONFLICT ---
 import pyrogram.errors
 if not hasattr(pyrogram.errors, 'GroupcallForbidden'):
-    class GroupcallForbidden(Exception):
-        pass
+    class GroupcallForbidden(Exception): pass
     pyrogram.errors.GroupcallForbidden = GroupcallForbidden
-# ------------------------------------
+# ----------------------------------------------------
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -30,15 +28,12 @@ SESSION_STRING = "BQFLMbAANQBC6oPztCBRPNiCK1HU-eNwJj4rBtJf5gTWezHVVmATq8DeaGvhvT
 TWILIO_SID = "AC6134464586bae7fa19b92a350c6708a9"
 TWILIO_TOKEN = "42f5c815ecb92643d45d18a52f1a8440"
 TWILIO_NUMBER = "+14482173794"
-
 VPS_PUBLIC_IP = "16.171.30.40" 
 WEB_PORT = 5000
 
 # --- INITIALIZATION ---
 bot = Client("telephony_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user = Client("user_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
-
-# We initialize PyTgCalls after the patch and clients are defined
 call_app = PyTgCalls(user)
 twilio_api = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 active_sessions = {}
@@ -70,29 +65,40 @@ async def websocket_handler(request):
                         session = active_sessions.get(cid)
                         if session and session["is_recording"] and session["record_handle"]:
                             session["record_handle"].write(payload)
-    except Exception: pass
+    except: pass
     return ws
 
 # --- BOT COMMANDS ---
 @bot.on_message(filters.command("call") & filters.group)
 async def start_call(client, message):
+    chat_id = message.chat.id
     if len(message.command) < 2:
-        return await message.reply("Usage: /call +919509203839")
+        return await message.reply("Usage: `/call +91...`")
     
     target = message.command[1]
-    chat_id = message.chat.id
     fifo_path = f"/tmp/twilio_{chat_id}.fifo"
     if not os.path.exists(fifo_path): os.mkfifo(fifo_path)
 
+    # Status Message
+    status = await message.reply("Initiating secure connection...")
+
     try:
+        # Pre-resolve check
+        try:
+            await user.get_chat(chat_id)
+        except:
+            return await status.edit("User session not found in this group. Please add it first.")
+
         outbound = twilio_api.calls.create(
             url=f"http://{VPS_PUBLIC_IP}:{WEB_PORT}/voice?cid={chat_id}",
             to=target, from_=TWILIO_NUMBER
         )
+        
         active_sessions[chat_id] = {
             "sid": outbound.sid, "is_recording": False, "record_handle": None,
             "raw_path": f"/tmp/rec_{chat_id}.raw", "final_path": f"/tmp/final_{chat_id}.ogg"
         }
+        
         await call_app.play(chat_id, MediaStream(fifo_path))
         
         kb = InlineKeyboardMarkup([
@@ -100,26 +106,23 @@ async def start_call(client, message):
              InlineKeyboardButton("Join VC", url=f"https://t.me/{message.chat.username}?videochat")],
             [InlineKeyboardButton("Start Recording", callback_data="rec")]
         ])
-        await message.reply(f"Call initiated to {target}. Audio routed to Voice Chat.", reply_markup=kb)
+        await status.edit(f"Call initiated to `{target}`.\nAudio routed to Voice Chat.", reply_markup=kb)
     except Exception as e:
-        await message.reply(f"Error: {e}")
+        await status.edit(f"Error: {e}")
 
 @bot.on_callback_query()
 async def cb_handler(client, query: CallbackQuery):
     cid = query.message.chat.id
-    data = query.data
     session = active_sessions.get(cid)
-
-    if data == "end":
+    if query.data == "end":
         if session:
             try: twilio_api.calls(session["sid"]).update(status="completed")
             except: pass
             if session["record_handle"]: session["record_handle"].close()
             del active_sessions[cid]
         await call_app.leave_call(cid)
-        await query.message.edit_text("Call Ended.")
-        
-    elif data == "rec":
+        await query.message.edit_text("Call Connection Terminated.")
+    elif query.data == "rec" and session:
         session["is_recording"] = True
         session["record_handle"] = open(session["raw_path"], "wb")
         kb = InlineKeyboardMarkup([
@@ -128,30 +131,29 @@ async def cb_handler(client, query: CallbackQuery):
             [InlineKeyboardButton("Stop Recording", callback_data="stop_rec")]
         ])
         await query.message.edit_reply_markup(reply_markup=kb)
-        await query.answer("Recording started.")
-
-    elif data == "stop_rec":
+        await query.answer("Recording...")
+    elif query.data == "stop_rec" and session:
         session["is_recording"] = False
         session["record_handle"].close()
         session["record_handle"] = None
-        await query.answer("Saving recording...")
-        
-        # Convert raw audio
-        cmd = f"ffmpeg -y -f mulaw -ar 8000 -i {session['raw_path']} -c:a libopus {session['final_path']}"
-        subprocess.run(cmd.split())
-        await client.send_voice(cid, session["final_path"], caption="Call Recording")
+        subprocess.run(["ffmpeg", "-y", "-f", "mulaw", "-ar", "8000", "-i", session['raw_path'], "-c:a", "libopus", session['final_path']])
+        await client.send_voice(cid, session["final_path"], caption="Call Recording File")
 
 # --- MAIN ---
 async def main():
-    app = web.Application()
-    app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
-    runner = web.AppRunner(app)
+    # Start Web Server
+    web_app = web.Application()
+    web_app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
+    runner = web.AppRunner(web_app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', WEB_PORT).start()
     
+    # Start Clients
     await bot.start()
+    await user.start()
     await call_app.start()
-    print("System active.")
+    
+    print("--- SYSTEM FULLY ONLINE ---")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
