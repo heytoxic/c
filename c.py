@@ -7,7 +7,7 @@ from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioPiped
+from pytgcalls.types import MediaStream
 from twilio.rest import Client as TwilioClient
 
 # --- CONFIGURATION & CREDENTIALS ---
@@ -20,7 +20,7 @@ TWILIO_SID = "AC6134464586bae7fa19b92a350c6708a9"
 TWILIO_TOKEN = "42f5c815ecb92643d45d18a52f1a8440"
 TWILIO_NUMBER = "+14482173794"
 
-VPS_PUBLIC_IP = "16.171.30.40" # Replace with your server's public IP
+VPS_PUBLIC_IP = "YOUR_VPS_PUBLIC_IP" # CRITICAL: Insert your Ubuntu VPS IP here
 WEB_PORT = 5000
 
 # --- INITIALIZATION ---
@@ -33,8 +33,8 @@ active_sessions = {}
 
 # --- AIOHTTP WEBHOOK & WEBSOCKET SERVER ---
 async def voice_webhook(request):
-    """Handles the initial Twilio connection and instructs it to start a WebSocket stream."""
-    cid = request.query.get('cid', 'default')
+    """Instructs Twilio to open a WebSocket stream for live audio."""
+    cid = request.query.get('cid', '0')
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
     <Response>
         <Connect>
@@ -44,7 +44,7 @@ async def voice_webhook(request):
     return web.Response(text=twiml, content_type='text/xml')
 
 async def websocket_handler(request):
-    """Receives live base64 audio from Twilio, decodes it, and writes to the system pipe."""
+    """Receives and routes the live audio payload from Twilio."""
     cid = int(request.match_info.get('cid', 0))
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -76,7 +76,7 @@ async def websocket_handler(request):
                             except Exception:
                                 pass
     except Exception as e:
-        print(f"Stream interrupted: {e}")
+        print(f"Stream terminated: {e}")
         
     return ws
 
@@ -84,7 +84,7 @@ async def websocket_handler(request):
 @bot.on_message(filters.command("call") & filters.group)
 async def initiate_call(client, message):
     if len(message.command) < 2:
-        await message.reply("Invalid syntax. Usage: /call +91950*****9")
+        await message.reply("Invalid syntax. Usage: /call +919509203839")
         return
 
     target = message.command[1]
@@ -112,7 +112,7 @@ async def initiate_call(client, message):
         }
         
         # Bridge the local FIFO pipe into the Telegram Voice Chat
-        await call_app.play(chat_id, AudioPiped(fifo_path))
+        await call_app.play(chat_id, MediaStream(fifo_path))
 
         keyboard = InlineKeyboardMarkup([
             [
@@ -189,13 +189,14 @@ async def process_callbacks(client, query: CallbackQuery):
         await query.message.edit_reply_markup(reply_markup=keyboard)
         await query.answer("Processing recording data...")
         
-        # Convert raw telecom audio to Telegram-compatible format
+        # Convert raw telecom audio to Telegram-compatible OGG format
         raw_path = session["raw_path"]
         final_path = session["final_path"]
         convert_cmd = f"ffmpeg -y -f mulaw -ar 8000 -i {raw_path} -c:a libopus {final_path}"
         subprocess.run(convert_cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        await client.send_audio(cid, final_path, caption="Automated Call Recording")
+        # Upload the converted recording back to the group
+        await client.send_voice(cid, final_path, caption="Automated Call Recording")
 
 # --- EXECUTION ---
 async def main():
@@ -221,4 +222,4 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
-        
+    
