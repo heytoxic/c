@@ -6,9 +6,9 @@ from pytgcalls.types import AudioPiped
 from twilio.rest import Client as TwilioClient
 
 # Telegram Credentials
-API_ID = "YOUR_API_ID"
-API_HASH = ""
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+API_ID = "21705136"
+API_HASH = "78730e89d196e160b0f1992018c6cb19"
+BOT_TOKEN = "8750484092:AAGWLBGJgFXYG65iJf4Mm_nh0tQ4C8q1IEc"
 SESSION_STRING = ""
 
 # Twilio Trial Credentials
