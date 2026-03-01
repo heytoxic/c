@@ -5,7 +5,7 @@ import base64
 import subprocess
 from aiohttp import web
 
-# --- MONKEY PATCH FOR PYROGRAM/PYTGCALLS CONFLICT ---
+# --- CRITICAL FIX: PYROGRAM/PYTGCALLS MONKEY PATCH ---
 import pyrogram.errors
 if not hasattr(pyrogram.errors, 'GroupcallForbidden'):
     class GroupcallForbidden(Exception): pass
@@ -38,7 +38,7 @@ call_app = PyTgCalls(user)
 twilio_api = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 active_sessions = {}
 
-# --- WEB SERVER LOGIC ---
+# --- WEB SERVER (TWILIO AUDIO BRIDGE) ---
 async def voice_webhook(request):
     cid = request.query.get('cid', '0')
     response = VoiceResponse()
@@ -68,27 +68,39 @@ async def websocket_handler(request):
     except: pass
     return ws
 
-# --- BOT COMMANDS ---
+# --- BOT INTERFACE ---
+@bot.on_message(filters.command("start") & filters.private)
+async def start_cmd(client, message):
+    text = (
+        "Telephony Voice System Active\n\n"
+        "How to use:\n"
+        "1. Add me and my User Assistant to your group.\n"
+        "2. Ensure User Assistant is an admin with VC permissions.\n"
+        "3. Manually start a Video Chat in the group.\n"
+        "4. Use /call [number] to initiate a bridge."
+    )
+    await message.reply(text)
+
 @bot.on_message(filters.command("call") & filters.group)
-async def start_call(client, message):
-    chat_id = message.chat.id
+async def call_cmd(client, message):
     if len(message.command) < 2:
-        return await message.reply("Usage: `/call +91...`")
+        return await message.reply("Usage: /call +919509203839")
     
     target = message.command[1]
+    chat_id = message.chat.id
     fifo_path = f"/tmp/twilio_{chat_id}.fifo"
+    
     if not os.path.exists(fifo_path): os.mkfifo(fifo_path)
-
-    # Status Message
-    status = await message.reply("Initiating secure connection...")
+    status_msg = await message.reply("Establishing connection...")
 
     try:
-        # Pre-resolve check
+        # Resolving Peer
         try:
             await user.get_chat(chat_id)
         except:
-            return await status.edit("User session not found in this group. Please add it first.")
+            return await status_msg.edit("Assistant not found in this group. Please add it first.")
 
+        # Trigger Twilio
         outbound = twilio_api.calls.create(
             url=f"http://{VPS_PUBLIC_IP}:{WEB_PORT}/voice?cid={chat_id}",
             to=target, from_=TWILIO_NUMBER
@@ -99,6 +111,7 @@ async def start_call(client, message):
             "raw_path": f"/tmp/rec_{chat_id}.raw", "final_path": f"/tmp/final_{chat_id}.ogg"
         }
         
+        # Join VC
         await call_app.play(chat_id, MediaStream(fifo_path))
         
         kb = InlineKeyboardMarkup([
@@ -106,14 +119,15 @@ async def start_call(client, message):
              InlineKeyboardButton("Join VC", url=f"https://t.me/{message.chat.username}?videochat")],
             [InlineKeyboardButton("Start Recording", callback_data="rec")]
         ])
-        await status.edit(f"Call initiated to `{target}`.\nAudio routed to Voice Chat.", reply_markup=kb)
+        await status_msg.edit(f"Call active to {target}.\nAudio bridged to Voice Chat.", reply_markup=kb)
     except Exception as e:
-        await status.edit(f"Error: {e}")
+        await status_msg.edit(f"Telephony Error: {e}")
 
 @bot.on_callback_query()
-async def cb_handler(client, query: CallbackQuery):
+async def actions(client, query: CallbackQuery):
     cid = query.message.chat.id
     session = active_sessions.get(cid)
+    
     if query.data == "end":
         if session:
             try: twilio_api.calls(session["sid"]).update(status="completed")
@@ -121,7 +135,8 @@ async def cb_handler(client, query: CallbackQuery):
             if session["record_handle"]: session["record_handle"].close()
             del active_sessions[cid]
         await call_app.leave_call(cid)
-        await query.message.edit_text("Call Connection Terminated.")
+        await query.message.edit_text("Call Disconnected.")
+    
     elif query.data == "rec" and session:
         session["is_recording"] = True
         session["record_handle"] = open(session["raw_path"], "wb")
@@ -131,29 +146,32 @@ async def cb_handler(client, query: CallbackQuery):
             [InlineKeyboardButton("Stop Recording", callback_data="stop_rec")]
         ])
         await query.message.edit_reply_markup(reply_markup=kb)
-        await query.answer("Recording...")
+        await query.answer("System Recording...")
+        
     elif query.data == "stop_rec" and session:
         session["is_recording"] = False
         session["record_handle"].close()
         session["record_handle"] = None
+        # Convert and Send
         subprocess.run(["ffmpeg", "-y", "-f", "mulaw", "-ar", "8000", "-i", session['raw_path'], "-c:a", "libopus", session['final_path']])
         await client.send_voice(cid, session["final_path"], caption="Call Recording File")
 
-# --- MAIN ---
+# --- SERVER STARTUP ---
 async def main():
-    # Start Web Server
-    web_app = web.Application()
-    web_app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
-    runner = web.AppRunner(web_app)
+    app = web.Application()
+    app.add_routes([web.post('/voice', voice_webhook), web.get('/stream/{cid}', websocket_handler)])
+    runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', WEB_PORT).start()
     
-    # Start Clients
     await bot.start()
     await user.start()
+    # Resolve all peers to avoid PeerIdInvalid
+    async for dialog in user.get_dialogs():
+        pass
+        
     await call_app.start()
-    
-    print("--- SYSTEM FULLY ONLINE ---")
+    print("--- TELEPHONY SYSTEM ONLINE ---")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
